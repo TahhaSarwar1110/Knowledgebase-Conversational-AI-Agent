@@ -39,10 +39,11 @@ embedding = OpenAIEmbeddings(model="text-embedding-ada-002")
 vector_store = Chroma.from_documents(
     embedding=embedding,
     documents=character_splitted_documents,
-    persist_directory="./TCP_directory_1"
+    persist_directory="./TechnoSurge"
 )
 
-retriever = vector_store.as_retriever(search_type='mmr', search_kwargs={'k': 3, 'lambda_multi': 0.2})
+retriever = vector_stores[effective_role].as_retriever(search_type='similarity_score_threshold', search_kwargs={'k': 1, 'score_threshold': 0.8})
+    
 
 #chatbot memory
 chat_memory = ConversationSummaryMemory(llm=ChatOpenAI(), memory_key='message_log')
