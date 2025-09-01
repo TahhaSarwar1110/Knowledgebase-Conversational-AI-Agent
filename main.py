@@ -42,7 +42,7 @@ vector_store = Chroma.from_documents(
     persist_directory="./TechnoSurge"
 )
 
-retriever = vector_stores[effective_role].as_retriever(search_type='similarity_score_threshold', search_kwargs={'k': 1, 'score_threshold': 0.8})
+retriever = vector_store.as_retriever(search_type='similarity_score_threshold', search_kwargs={'k': 1, 'score_threshold': 0.8})
     
 
 #chatbot memory
