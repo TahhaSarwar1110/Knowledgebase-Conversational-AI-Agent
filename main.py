@@ -14,6 +14,11 @@ from langchain_text_splitters.markdown import MarkdownHeaderTextSplitter
 from langchain_text_splitters.character import CharacterTextSplitter
 from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader
 
+load_dotenv()
+openai_api_key = os.getenv("OPENAI_API_KEY")
+if not openai_api_key:
+    raise RuntimeError("❌ ERROR: OPENAI_API_KEY is missing.")
+
 
 page = PyPDFLoader('User Query_2.pdf')
 my_document = page.load()
