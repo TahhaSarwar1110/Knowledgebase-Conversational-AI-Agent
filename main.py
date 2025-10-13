@@ -42,7 +42,7 @@ vector_store = Chroma.from_documents(
     persist_directory="./TechnoSurge"
 )
 
-retriever = vector_store.as_retriever(search_type='similarity_score_threshold', search_kwargs={'k': 1, 'score_threshold': 0.8})
+retriever = vector_store.as_retriever(search_type='similarity_score_threshold', search_kwargs={'k': 1, 'score_threshold': 0.7})
     
 
 #chatbot memory
@@ -75,7 +75,7 @@ prompt_template = PromptTemplate.from_template(template=TEMPLATE)
 # ChatOpenAI instance
 chat = ChatOpenAI(
     model="gpt-4",
-    temperature=0,
+    temperature=0.5,
     max_tokens=250,
 )
 #chain combining memory and RAG
