@@ -141,7 +141,7 @@ async def chat_endpoint(request: ChatRequest):
         # update last activity
         session["last_activity"] = time.time()
 
-        return ChatResponse(response=response, session_id=session_id)
+        return ChatResponse(response=str(response), session_id=session_id)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing chat: {str(e)}")
