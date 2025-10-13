@@ -1,122 +1,182 @@
-from langchain.memory import ConversationSummaryMemory
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import PromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough, RunnableLambda
-from operator import itemgetter
-from langchain_core.runnables import chain
+# app/main.py
+import os
+import time
+import uuid
+import asyncio
+from typing import Dict, Optional, Any
 
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
-from langchain_openai.embeddings import OpenAIEmbeddings
-from langchain_community.vectorstores import Chroma
-from langchain_core.documents import Document
-from langchain_text_splitters.markdown import MarkdownHeaderTextSplitter
-from langchain_text_splitters.character import CharacterTextSplitter
-from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader
-
+# Load environment variables
 load_dotenv()
-openai_api_key = os.getenv("OPENAI_API_KEY")
-if not openai_api_key:
-    raise RuntimeError("❌ ERROR: OPENAI_API_KEY is missing.")
 
+# RAG helpers
+from rag.ingest import get_vector_store, get_retriever
+from rag.chain import create_rag_chain
 
-page = PyPDFLoader('User Query_2.pdf')
-my_document = page.load()
+# Config
+SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", 60 * 60))  # default 1 hour
+CLEANUP_INTERVAL_SECONDS = int(os.getenv("CLEANUP_INTERVAL_SECONDS", 60))  # run every minute
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")  # e.g. "https://site.com"
 
-#header_splitter = MarkdownHeaderTextSplitter(
-   # headers_to_split_on=[("#", "Course Title"), ("##", "Lecture Title")]
-#)
-#header_splitted_document = header_splitter.split_text(my_document[0].page_content)
-#for i in range(len(header_splitted_document)):
-    #header_splitted_document[i].page_content = ' '.join(header_splitted_document[i].page_content.split())
+# FastAPI app
+app = FastAPI(title="TechnoSurge RAG API", version="1.0.0")
 
-character_splitter = CharacterTextSplitter(separator=".", chunk_size=500, chunk_overlap=50)
-character_splitted_documents = character_splitter.split_documents(my_document)
-for i in range(len(character_splitted_documents)):
-    character_splitted_documents[i].page_content = ' '.join(character_splitted_documents[i].page_content.split())
-
-embedding = OpenAIEmbeddings(model="text-embedding-ada-002")
-vector_store = Chroma.from_documents(
-    embedding=embedding,
-    documents=character_splitted_documents,
-    persist_directory="./TechnoSurge"
+# CORS - in prod set actual origins in ALLOWED_ORIGINS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS if ALLOWED_ORIGINS != ["*"] else ["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-retriever = vector_store.as_retriever(search_type='similarity_score_threshold', search_kwargs={'k': 1, 'score_threshold': 0.7})
-    
+# Request/response models
+class ChatRequest(BaseModel):
+    question: str
+    session_id: Optional[str] = None
 
-#chatbot memory
-chat_memory = ConversationSummaryMemory(llm=ChatOpenAI(), memory_key='message_log')
+class ChatResponse(BaseModel):
+    response: str
+    session_id: str
 
-#prompt template for the chatbot
-TEMPLATE = """
-The AI should:
+class IngestResponse(BaseModel):
+    message: str
+    status: str
 
-Answer strictly based on the provided context: Only use the information available in the provided context to respond to questions.
-Avoid hallucinating: The AI should not make up or speculate answers beyond the provided context.
-Provide a complete, clear, and well-structured response, enhancing overall user experience: The AI should summarize the answer but cover all necessary steps or information for the user to act on the response.
-If the context doesn’t provide an answer,The AI should say: Sorry, I don't know the answer.
-if not enough details are provided in the question, the AI should ask for more specific information
+# Globals
+vector_store: Any = None
+retriever: Any = None
+# We will create a chain+memory per session and store here
+chat_sessions: Dict[str, Dict[str, Any]] = {}  # session_id -> {"chain":..., "memory":..., "last_activity": float}
+
+# Startup: initialize vector store & retriever
+@app.on_event("startup")
+async def startup_event():
+    global vector_store, retriever
+
+    try:
+        if not os.getenv("OPENAI_API_KEY"):
+            raise RuntimeError("OPENAI_API_KEY is missing")
+
+        pdf_path = os.getenv("PDF_PATH", "docs/User Query_2.pdf")
+        vector_store = get_vector_store(pdf_path)
+        retriever = get_retriever(vector_store)
+
+        # Warm a prototype chain (optional) to avoid first-call cold start
+        _ , _ = create_rag_chain(retriever)
+
+        # start background cleanup loop
+        asyncio.create_task(_session_cleanup_loop())
+
+        print("✅ RAG system initialized successfully")
+
+    except Exception as e:
+        print(f"❌ Error during startup: {e}")
+        raise
+
+# Ingest endpoint — re-create vector store and retriever
+@app.post("/ingest", response_model=IngestResponse)
+async def ingest_document():
+    """Re-ingest the PDF document into the vector store"""
+    global vector_store, retriever, chat_sessions
+
+    try:
+        pdf_path = os.getenv("PDF_PATH", "docs/User Query_2.pdf")
+        vector_store = get_vector_store(pdf_path)
+        retriever = get_retriever(vector_store)
+
+        # Clear existing per-session chains - they reference old retriever/context
+        chat_sessions.clear()
+
+        return IngestResponse(message="PDF successfully ingested into vector store", status="success")
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error ingesting document: {str(e)}")
+
+# Helper: create per-session rag chain + memory
+def _create_session(session_id: str):
+    """
+    Create a new chain (with its own ConversationSummaryMemory) for a session.
+    This calls your existing create_rag_chain(retriever) which returns (chain, memory).
+    """
+    global retriever, chat_sessions
+    if retriever is None:
+        raise RuntimeError("Retriever not initialized")
+
+    rag_chain, memory = create_rag_chain(retriever)
+    chat_sessions[session_id] = {
+        "chain": rag_chain,
+        "memory": memory,
+        "last_activity": time.time()
+    }
+    return chat_sessions[session_id]["chain"]
+
+# Run chain.invoke in a threadpool to avoid blocking the event loop
+async def _run_chain_in_thread(chain, question: str):
+    loop = asyncio.get_running_loop()
+    # chain.invoke is synchronous in your implementation; run it in executor
+    result = await loop.run_in_executor(None, chain.invoke, question)
+    return result
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat_endpoint(request: ChatRequest):
+    """Chat endpoint with session-based memory"""
+    try:
+        session_id = request.session_id or str(uuid.uuid4())
+
+        # create session if missing
+        if session_id not in chat_sessions:
+            _create_session(session_id)
+
+        session = chat_sessions[session_id]
+        chain = session["chain"]
+
+        # Run chain in background thread
+        response = await _run_chain_in_thread(chain, request.question)
+
+        # update last activity
+        session["last_activity"] = time.time()
+
+        return ChatResponse(response=response, session_id=session_id)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing chat: {str(e)}")
 
 
-Current Conversation:
-{message_log}
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "service": "TechnoSurge RAG API", "sessions": len(chat_sessions)}
 
-Question Context:
-{context}
-
-Human:
-{question}
-
-AI:
-"""
-prompt_template = PromptTemplate.from_template(template=TEMPLATE)
-
-# ChatOpenAI instance
-chat = ChatOpenAI(
-    model="gpt-4",
-    temperature=0.5,
-    max_tokens=250,
-)
-#chain combining memory and RAG
-@chain
-def memory_rag_chain(question):
-    # Retrieve relevant documents from the vector store
-    retrieved_docs = retriever.invoke(question)
-    context = "\n".join([doc.page_content for doc in retrieved_docs])
-
-    # If no relevant context is found, a "Sorry" response is returned
-    if not context.strip():
-        response = "Sorry, I don't know the answer."
-        chat_memory.save_context(inputs={'input': question}, outputs={'output': response})
-        return response
-
-    # Combining memory and RAG for the prompt
-    chain = (
-        RunnablePassthrough.assign(
-            message_log=RunnableLambda(chat_memory.load_memory_variables) | itemgetter("message_log"),
-            context=RunnablePassthrough()  # Pass the RAG context
-        )
-        | prompt_template
-        | chat
-        | StrOutputParser()
-    )
-
-    # Invoking the chain
-    response = chain.invoke({'question': question, 'context': context})
-
-    # Saving the interaction in memory
-    chat_memory.save_context(inputs={'input': question}, outputs={'output': response})
-
-    return response
-
-# Usage
-if __name__ == "__main__":
-    print("Chatbot is ready! Type 'exit' to end the conversation.")
+# Background cleanup loop to free old session memory
+async def _session_cleanup_loop():
+    global chat_sessions
     while True:
-        user_input = input("You: ")
-        if user_input.lower() in ['exit', 'quit']:
-            break
-        response = memory_rag_chain.invoke(user_input)
-        print(f"Taha's Bot: {response}")
+        try:
+            now = time.time()
+            to_delete = []
+            for sid, info in list(chat_sessions.items()):
+                if now - info.get("last_activity", 0) > SESSION_TTL_SECONDS:
+                    to_delete.append(sid)
+            for sid in to_delete:
+                # If memory object needs explicit cleanup, do it here
+                del chat_sessions[sid]
+                print(f"🧹 cleaned up session {sid}")
+        except Exception as e:
+            print(f"Session cleanup error: {e}")
+        await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
 
+# Render deployment setup
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    print(f"🚀 Starting TechnoSurge RAG API on port {port}")
+    uvicorn.run(
+        "app.main:app", 
+        host="0.0.0.0", 
+        port=port, 
+        reload=False
+    )
