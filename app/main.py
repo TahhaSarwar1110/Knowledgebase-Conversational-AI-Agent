@@ -136,12 +136,17 @@ async def chat_endpoint(request: ChatRequest):
         chain = session["chain"]
 
         # Run chain in background thread
-        response = await _run_chain_in_thread(chain, request.question)
-
+        raw_response = await _run_chain_in_thread(chain, request.question)
+        if isinstance(raw_response, dict):
+        reply_text = raw_response.get('answer', "Sorry, no response from server.")
+        else:
+        reply_text = str(raw_response)
+    
         # update last activity
         session["last_activity"] = time.time()
-
-        return ChatResponse(response=str(response), session_id=session_id)
+    
+       # Return only the answer text and session ID
+       return ChatResponse(response=reply_text, session_id=session_id)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing chat: {str(e)}")
