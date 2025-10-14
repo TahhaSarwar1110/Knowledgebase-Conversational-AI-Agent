@@ -128,7 +128,7 @@ async def chat_endpoint(request: ChatRequest):
     try:
         session_id = request.session_id or str(uuid.uuid4())
 
-        # Create session if missing
+        # create session if missing
         if session_id not in chat_sessions:
             _create_session(session_id)
 
@@ -136,22 +136,16 @@ async def chat_endpoint(request: ChatRequest):
         chain = session["chain"]
 
         # Run chain in background thread
-        raw_response = await _run_chain_in_thread(chain, request.question)
+        response = await _run_chain_in_thread(chain, request.question)
 
-        # Extract 'answer' if dict, else convert to string
-        if isinstance(raw_response, dict):
-            reply_text = raw_response.get('answer', "Sorry, no response from server.")
-        else:
-            reply_text = str(raw_response)
-
-        # Update last activity timestamp
+        # update last activity
         session["last_activity"] = time.time()
 
-        # Return only the answer text and session ID
-        return ChatResponse(response=reply_text, session_id=session_id)
+        return ChatResponse(response=response, session_id=session_id)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing chat: {str(e)}")
+
 
 @app.get("/health")
 async def health_check():
@@ -175,14 +169,7 @@ async def _session_cleanup_loop():
             print(f"Session cleanup error: {e}")
         await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
 
-# Render deployment setup
+# Run with: uvicorn app.main:app --host 0.0.0.0 --port 8000
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    print(f"🚀 Starting TechnoSurge RAG API on port {port}")
-    uvicorn.run(
-        "app.main:app", 
-        host="0.0.0.0", 
-        port=port, 
-        reload=False
-    )
+    uvicorn.run("app.main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)), reload=True)
