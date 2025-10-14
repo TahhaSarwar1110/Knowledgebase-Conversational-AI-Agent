@@ -9,7 +9,7 @@ from langchain_core.runnables import chain
 TEMPLATE = """
 The AI should:
 
-Answer strictly based on the provided context: Only use the information available in the provided context to respond to questions.
+Answer based on the provided context: Only use the information available in the provided context to respond to questions.
 Avoid hallucinating: The AI should not make up or speculate answers beyond the provided context.
 Provide a complete, clear, and well-structured response, enhancing overall user experience: The AI should summarize the answer but cover all necessary steps or information for the user to act on the response.
 If the context doesn't provide an answer,The AI should say: Sorry, I don't know the answer.
@@ -40,7 +40,7 @@ def create_rag_chain(retriever):
     
     chat = ChatOpenAI(
         model="gpt-4",
-        temperature=0,
+        temperature=0.5,
         max_tokens=250,
     )
     
