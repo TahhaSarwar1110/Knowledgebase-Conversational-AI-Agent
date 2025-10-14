@@ -42,7 +42,7 @@ def get_retriever(vector_store):
     try:
         retriever = vector_store.as_retriever(
             search_type="similarity",
-            search_kwargs={"k": 1}
+            search_kwargs={"k": 1, 'score_threshold': 0.7}
         )
         return retriever
     except Exception as e:
