@@ -128,7 +128,7 @@ async def chat_endpoint(request: ChatRequest):
     try:
         session_id = request.session_id or str(uuid.uuid4())
 
-        # create session if missing
+        # Create session if missing
         if session_id not in chat_sessions:
             _create_session(session_id)
 
@@ -137,20 +137,21 @@ async def chat_endpoint(request: ChatRequest):
 
         # Run chain in background thread
         raw_response = await _run_chain_in_thread(chain, request.question)
+
+        # Extract 'answer' if dict, else convert to string
         if isinstance(raw_response, dict):
-        reply_text = raw_response.get('answer', "Sorry, no response from server.")
+            reply_text = raw_response.get('answer', "Sorry, no response from server.")
         else:
-        reply_text = str(raw_response)
-    
-        # update last activity
+            reply_text = str(raw_response)
+
+        # Update last activity timestamp
         session["last_activity"] = time.time()
-    
-       # Return only the answer text and session ID
-       return ChatResponse(response=reply_text, session_id=session_id)
+
+        # Return only the answer text and session ID
+        return ChatResponse(response=reply_text, session_id=session_id)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing chat: {str(e)}")
-
 
 @app.get("/health")
 async def health_check():
