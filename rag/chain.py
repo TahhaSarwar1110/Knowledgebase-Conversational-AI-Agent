@@ -40,7 +40,7 @@ def create_rag_chain(retriever):
     
     chat = ChatOpenAI(
         model="gpt-4",
-        temperature=0.5,
+        temperature=0.7,
         max_tokens=250,
     )
     
